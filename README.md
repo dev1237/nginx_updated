@@ -19,6 +19,12 @@ the rest to the secondary server.
    same box as nginx               second RHEL host
 ```
 
+**Important:** `127.0.0.1:2222` is purely internal — it is how nginx reaches
+the sshd running on the *same* machine it's on, and is never reachable from
+any other machine (sshd there is bound to loopback only). No other host on
+the network ever needs to know about it, or about port 2222 at all. Every
+client, from anywhere, only ever needs one address: `172.21.129.16:22`.
+
 ## Why this design
 
 - **nginx stream module** (`ngx_stream_module`, TCP/L4 proxy — not `http{}`)
@@ -96,6 +102,35 @@ remaining 3 overflowed to the secondary (172.21.129.138:22)** — confirmed
 independently by counting live established sockets on both backends mid-test
 (`ss -tn state established`). This matches the required behavior: max 5
 connections on the main server, the rest routed to server 2.
+
+### Verified from a genuinely external client, not just loopback
+
+The test above was run with the SSH client on 172.21.129.16 itself, which
+risks the kernel routing self-addressed traffic straight over loopback
+instead of the real NIC/firewall path. To rule that out, the same connection
+was repeated with the SSH client running on 172.21.129.138 — a separate,
+genuinely external machine — connecting out to `172.21.129.16:22`:
+
+```
+$ ssh root@172.21.129.16 'echo LANDED ON: $(hostname); echo SSH_CONNECTION: $SSH_CONNECTION'
+LANDED ON: vlsilab-client70.eced.svnit.ac.in
+SSH_CONNECTION: 127.0.0.1 48302 127.0.0.1 2222
+```
+
+and, checked concurrently on 172.21.129.16 itself while the session was held
+open:
+
+```
+$ ss -tn 'sport = :22'
+ESTAB  172.21.129.16:22   172.21.129.138:47592
+```
+
+nginx's listening socket on port 22 shows the real peer address
+`172.21.129.138`, confirming the connection came in over the actual network
+interface and firewalld's real INPUT chain, not a loopback shortcut. The
+`SSH_CONNECTION` value from the sshd side showing `127.0.0.1:2222` is
+expected and correct — that's just nginx's own internal hop to the local
+backend, invisible to the client.
 
 ## Known limitations (lab setup, not production-hardened)
 
